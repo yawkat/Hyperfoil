@@ -185,6 +185,92 @@ public class CheckProcessorTest {
             .isTrue();
    }
 
+   @Test
+   public void equalToProcessorSurvivesJavaSerializationRoundTrip() throws IOException, ClassNotFoundException {
+      Processor processor = roundTrip(new CheckProcessor.Builder().equalTo("body").build(false));
+
+      assertThat(validate(processor, 0, bytes("body")).isValid()).isTrue();
+      assertThat(validate(processor, 0, bytes("bodY")).isValid()).isFalse();
+   }
+
+   @Test
+   public void regexDotMatchesLineTerminators() {
+      assertValid(new CheckProcessor.Builder().regex(".*"), "line1\nline2\r\n");
+      assertValid(new CheckProcessor.Builder().regex("prefix-.*-suffix"), "prefix-\n-suffix");
+      assertValid(new CheckProcessor.Builder().regex(".*"), "");
+      assertThat(validate(new CheckProcessor.Builder().regex(".*").build(false), 0, new byte[0]).isValid()).isTrue();
+   }
+
+   @Test
+   public void regexProcessorSurvivesJavaSerializationRoundTrip() throws IOException, ClassNotFoundException {
+      Processor processor = roundTrip(new CheckProcessor.Builder().regex("a.c").build(false));
+
+      assertThat(validate(processor, 0, bytes("a\nc")).isValid()).isTrue();
+      assertThat(validate(processor, 0, bytes("abcd")).isValid()).isFalse();
+   }
+
+   @Test
+   public void regexAndJsonReuseSessionResourcesAcrossRequestsAndGrowingBodies() {
+      String longText = "x".repeat(1000) + "€";
+      assertResults(new CheckProcessor.Builder().regex("x*€"), new boolean[] { true, false, true, true },
+            bytes("x€"), bytes("y"), bytes(longText), bytes("€"));
+
+      String longJson = "{\"value\":\"" + "y".repeat(1000) + "\"}";
+      assertResults(new CheckProcessor.Builder().json("{\"value\":\"" + "y".repeat(1000) + "\"}"),
+            new boolean[] { true, false, false, true },
+            bytes(longJson), bytes("{\"value\":\"y\"}"), bytes("{\"value\":"), bytes(longJson));
+   }
+
+   @Test
+   public void jsonNumbersOutsideLongRangeCompareMathematically() {
+      assertValid(new CheckProcessor.Builder().json("9223372036854775808"), "9223372036854775808");
+      assertValid(new CheckProcessor.Builder().json("9223372036854775808"), "9.223372036854775808e18");
+      assertInvalid(new CheckProcessor.Builder().json("9223372036854775808"), "9223372036854775807");
+      assertInvalid(new CheckProcessor.Builder().json("1"), "9223372036854775808");
+      assertInvalid(new CheckProcessor.Builder().json("1.5"), "1");
+      assertInvalid(new CheckProcessor.Builder().json("1.5"), "2");
+   }
+
+   @Test
+   public void mismatchWithoutRequestInProgressDoesNotThrow() {
+      Processor processor = new CheckProcessor.Builder().equalTo("expected").build(false);
+      Session session = SessionFactory.forTesting();
+      try {
+         ResourceUtilizer.reserveForTesting(session, processor);
+         ByteBuf data = Unpooled.wrappedBuffer(bytes("actual"));
+         try {
+            assertDoesNotThrow(() -> processor.process(session, data, 0, data.readableBytes(), true));
+         } finally {
+            data.release();
+         }
+      } finally {
+         SessionFactory.destroy(session);
+      }
+   }
+
+   private static void assertResults(CheckProcessor.Builder builder, boolean[] expected, byte[]... bodies) {
+      Processor processor = builder.build(false);
+      Session session = SessionFactory.forTesting();
+      try {
+         ResourceUtilizer.reserveForTesting(session, processor);
+         for (int i = 0; i < bodies.length; ++i) {
+            TestRequest request = new TestRequest(session);
+            session.currentRequest(request);
+            ByteBuf data = Unpooled.wrappedBuffer(bodies[i]);
+            try {
+               processor.before(session);
+               processor.process(session, data, 0, bodies[i].length, true);
+               processor.after(session);
+            } finally {
+               data.release();
+            }
+            assertThat(request.isValid()).as("body %d", i).isEqualTo(expected[i]);
+         }
+      } finally {
+         SessionFactory.destroy(session);
+      }
+   }
+
    private static void assertValid(CheckProcessor.Builder builder, String actual) {
       assertThat(validate(builder, 0, bytes(actual)).isValid()).isTrue();
    }
