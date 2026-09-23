@@ -5,116 +5,97 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
-import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.parallel.ResourceLock;
-import org.junit.jupiter.api.parallel.Resources;
 
 import io.hyperfoil.client.RestClient;
 import io.hyperfoil.client.RestClientException;
+import io.hyperfoil.internal.Controller;
 import io.hyperfoil.internal.Properties;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonObject;
-import io.vertx.ext.web.handler.BodyHandler;
 
-@ResourceLock(Resources.SYSTEM_PROPERTIES)
+/**
+ * Deploys a real controller and exercises benchmark registration around the request body limit.
+ * The limit is passed through the verticle config, so no system properties are touched; the root directory
+ * is set for the whole test JVM by surefire (see pom.xml) because {@link Controller#ROOT_DIR} is read only once.
+ */
 public class ControllerUploadTest {
-   @TempDir
-   static Path root;
-   static String previousRoot;
-   String previousLimit;
+   private static final int MIB = 1024 * 1024;
+
    Vertx vertx;
    RestClient client;
 
-   @BeforeAll
-   public static void configureRoot() {
-      previousRoot = System.setProperty(Properties.ROOT_DIR, root.toString());
-   }
-
-   @AfterAll
-   public static void restoreRoot() {
-      restore(Properties.ROOT_DIR, previousRoot);
-   }
-
-   @BeforeEach
-   public void resetLimit() {
-      previousLimit = System.getProperty(Properties.CONTROLLER_MAX_BODY_SIZE);
-      System.clearProperty(Properties.CONTROLLER_MAX_BODY_SIZE);
-   }
-
    @AfterEach
    public void closeController() throws Exception {
-      try {
-         if (client != null) {
-            client.close();
-         }
-         if (vertx != null) {
-            vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
-         }
-      } finally {
-         restore(Properties.CONTROLLER_MAX_BODY_SIZE, previousLimit);
+      if (client != null) {
+         client.close();
+      }
+      if (vertx != null) {
+         vertx.close().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
       }
    }
 
    @Test
    public void registerMultipartBenchmarkAboveDefaultLimit() throws Exception {
-      System.setProperty(Properties.CONTROLLER_MAX_BODY_SIZE, Integer.toString(32 * 1024 * 1024));
-      startController();
-      registerAndCheck((int) BodyHandler.DEFAULT_BODY_LIMIT + 1024 * 1024);
+      startController(new JsonObject().put(Properties.CONTROLLER_MAX_BODY_SIZE, 32L * MIB));
+      registerAndCheck("upload-above-default", (int) Controller.DEFAULT_MAX_BODY_SIZE + MIB);
    }
 
    @Test
    public void defaultLimitStillRejectsOversizedUploads() throws Exception {
-      startController();
-      assertRejected((int) BodyHandler.DEFAULT_BODY_LIMIT + 1024 * 1024);
+      startController(new JsonObject());
+      assertRejected("upload-rejected-default", (int) Controller.DEFAULT_MAX_BODY_SIZE + MIB);
    }
 
    @Test
    public void configuredLimitRejectsOversizedUploads() throws Exception {
-      System.setProperty(Properties.CONTROLLER_MAX_BODY_SIZE, Integer.toString(128 * 1024));
-      startController();
-      assertRejected(256 * 1024);
+      startController(new JsonObject().put(Properties.CONTROLLER_MAX_BODY_SIZE, 128 * 1024));
+      assertRejected("upload-rejected-configured", 256 * 1024);
    }
 
    @Test
    public void configuredLimitAcceptsSmallerUploads() throws Exception {
-      System.setProperty(Properties.CONTROLLER_MAX_BODY_SIZE, Integer.toString(128 * 1024));
-      startController();
-      registerAndCheck(64 * 1024);
+      startController(new JsonObject().put(Properties.CONTROLLER_MAX_BODY_SIZE, 128 * 1024));
+      registerAndCheck("upload-below-configured", 64 * 1024);
    }
 
-   private void startController() throws Exception {
+   @Test
+   public void invalidLimitFailsStartup() {
+      ExecutionException exception = assertThrows(ExecutionException.class,
+            () -> startController(new JsonObject().put(Properties.CONTROLLER_MAX_BODY_SIZE, 0)));
+      assertTrue(exception.getCause() instanceof IllegalArgumentException, exception::toString);
+      assertTrue(exception.getCause().getMessage().contains(Properties.CONTROLLER_MAX_BODY_SIZE), exception::toString);
+   }
+
+   private void startController(JsonObject config) throws Exception {
       vertx = Vertx.vertx();
       ControllerVerticle controller = new ControllerVerticle();
-      vertx.deployVerticle(controller, new DeploymentOptions().setConfig(new JsonObject()
-            .put(Properties.CONTROLLER_HOST, "localhost").put(Properties.CONTROLLER_PORT, 0)))
+      config.put(Properties.CONTROLLER_HOST, "localhost").put(Properties.CONTROLLER_PORT, 0);
+      vertx.deployVerticle(controller, new DeploymentOptions().setConfig(config))
             .toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
       client = new RestClient(vertx, "localhost", controller.actualPort(), false, false, null);
    }
 
-   private void registerAndCheck(int size) {
-      String name = "upload-" + UUID.randomUUID();
+   private void registerAndCheck(String name, int size) {
       byte[] payload = new byte[size];
       Arrays.fill(payload, (byte) 0x5a);
       payload[size - 1] = 0x7f;
       var benchmark = client.register(source(name), Map.of("payload.bin", payload), null, null);
       assertTrue(benchmark.exists());
       assertArrayEquals(payload, benchmark.files().get("payload.bin"));
+      // don't leave the stored benchmark for the next test/run
+      assertTrue(benchmark.forget());
+      assertFalse(benchmark.exists());
    }
 
-   private void assertRejected(int size) {
-      String name = "upload-" + UUID.randomUUID();
+   private void assertRejected(String name, int size) {
       RestClientException exception = assertThrows(RestClientException.class,
             () -> client.register(source(name), Map.of("payload.bin", new byte[size]), null, null));
       assertTrue(exception.getMessage().contains("413"), exception::getMessage);
@@ -133,13 +114,5 @@ public class ControllerUploadTest {
                   - main:
                     - noop
             """.formatted(name);
-   }
-
-   private static void restore(String property, String value) {
-      if (value == null) {
-         System.clearProperty(property);
-      } else {
-         System.setProperty(property, value);
-      }
    }
 }
