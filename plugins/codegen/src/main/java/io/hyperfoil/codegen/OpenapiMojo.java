@@ -148,6 +148,7 @@ public class OpenapiMojo extends AbstractMojo {
       unit.addImport("java.util.List");
       unit.addImport("java.util.Map");
       unit.addImport("java.util.Collections");
+      unit.addImport("io.hyperfoil.internal.Properties");
       unit.addImport("io.vertx.core.json.Json");
       unit.addImport("io.vertx.ext.web.handler.BodyHandler");
       unit.addImport("io.vertx.ext.web.Router");
@@ -164,7 +165,8 @@ public class OpenapiMojo extends AbstractMojo {
       ConstructorDeclaration ctor = clazz.addConstructor(Modifier.Keyword.PUBLIC);
       BlockStmt ctorBody = ctor.addParameter("ApiService", "service").addParameter("Router", "router").getBody();
       ctorBody.addStatement("this.service = service;");
-      ctorBody.addStatement("router.route().handler(BodyHandler.create(System.getProperty(\"java.io.tmpdir\")));");
+      ctorBody.addStatement("router.route().handler(BodyHandler.create(System.getProperty(\"java.io.tmpdir\"))" +
+            ".setBodyLimit(Properties.getLong(Properties.CONTROLLER_MAX_BODY_SIZE, BodyHandler.DEFAULT_BODY_LIMIT)));");
       ctorBody.addStatement("router.errorHandler(500, ctx -> {\n" +
             "            log.error(\"Error processing {} {}\", ctx.request().method(), ctx.request().uri(), ctx.failure());\n" +
             "        });");
