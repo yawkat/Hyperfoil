@@ -26,6 +26,7 @@ public class LoadAndRunTest {
       assertFalse(LoadAndRun.LoadAndRunCommand.hasErrors(successfulRun, successfulStats));
       assertTrue(LoadAndRun.LoadAndRunCommand.hasErrors(run(List.of("runtime error")), successfulStats));
       assertTrue(LoadAndRun.LoadAndRunCommand.hasErrors(successfulRun, stats(summary(1))));
+      assertFalse(LoadAndRun.LoadAndRunCommand.hasErrors(successfulRun, stats(summary(1), true)));
    }
 
    private static Run run(List<String> errors) {
@@ -35,8 +36,12 @@ public class LoadAndRunTest {
    }
 
    private static RequestStatisticsResponse stats(StatisticsSummary summary) {
+      return stats(summary, false);
+   }
+
+   private static RequestStatisticsResponse stats(StatisticsSummary summary, boolean warmup) {
       return new RequestStatisticsResponse("TERMINATED",
-            List.of(new RequestStats("test", 0, "request", summary, Collections.emptyList(), false)));
+            List.of(new RequestStats("test", 0, "request", summary, Collections.emptyList(), warmup)));
    }
 
    private static StatisticsSummary summary(int invalid) {

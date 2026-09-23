@@ -21,6 +21,13 @@ import io.vertx.core.json.JsonObject;
 public class RunTest extends BaseBenchmarkTest {
 
    @Test
+   public void testRunMain() {
+      String benchmark = getBenchmarkPath("scenarios/httpRequestParameterized.hf.yaml");
+      int result = LoadAndRun.run(new String[] { "-PSERVER_PORT=" + httpServer.actualPort(), benchmark });
+      assertEquals(CommandResult.SUCCESS.getResultValue(), result);
+   }
+
+   @Test
    public void testRun() {
       String benchmark = getBenchmarkPath("scenarios/httpRequestParameterized.hf.yaml");
       int result = new LoadAndRun(false)
@@ -51,7 +58,29 @@ public class RunTest extends BaseBenchmarkTest {
    @Test
    public void testRunFailsOnValidationErrorsOnlyWhenRequested(@TempDir Path tempDir)
          throws IOException {
-      String benchmark = writeBenchmark(tempDir, "invalid-response", 0, "5xx");
+      Path benchmarkFile = tempDir.resolve("invalid-response.hf.yaml");
+      // the test server always responds with 200, so every response is invalid for this benchmark
+      Files.writeString(benchmarkFile, """
+            name: invalid-response
+            http:
+              protocol: http
+              host: localhost
+              port: !param SERVER_PORT
+            phases:
+            - test:
+                atOnce:
+                  users: 1
+                  duration: 0s
+                  scenario:
+                    initialSequences:
+                    - request:
+                      - httpRequest:
+                          GET: /foo
+                          handler:
+                            status:
+                              range: 5xx
+            """);
+      String benchmark = benchmarkFile.toString();
       String port = "-PSERVER_PORT=" + httpServer.actualPort();
       Path resultFile = tempDir.resolve("failed-result.json");
 
@@ -61,6 +90,16 @@ public class RunTest extends BaseBenchmarkTest {
             new LoadAndRun(false)
                   .exec(new String[] { "--fail-on-errors", "--export", resultFile.toString(), port, benchmark }));
       assertFalse(new JsonObject(Files.readString(resultFile)).isEmpty());
+   }
+
+   @Test
+   public void testRunRejectsUnknownExportFormat() {
+      String benchmark = getBenchmarkPath("scenarios/httpRequestParameterized.hf.yaml");
+
+      int result = new LoadAndRun(false)
+            .exec(new String[] { "--export-format", "XML", "-PSERVER_PORT=" + httpServer.actualPort(), benchmark });
+
+      assertEquals(CommandResult.FAILURE.getResultValue(), result);
    }
 
    @Test
@@ -98,30 +137,5 @@ public class RunTest extends BaseBenchmarkTest {
       assertEquals(CommandResult.SUCCESS.getResultValue(), result);
       byte[] content = Files.readAllBytes(resultFile);
       assertTrue(content.length >= 2 && content[0] == 'P' && content[1] == 'K');
-   }
-
-   private String writeBenchmark(Path tempDir, String name, int durationSeconds, String expectedStatus) throws IOException {
-      Path benchmark = tempDir.resolve(name + ".hf.yaml");
-      Files.writeString(benchmark, """
-            name: %s
-            http:
-              protocol: http
-              host: localhost
-              port: !param SERVER_PORT
-            phases:
-            - test:
-                atOnce:
-                  users: 1
-                  duration: %ds
-                  scenario:
-                    initialSequences:
-                    - request:
-                      - httpRequest:
-                          GET: /foo
-                          handler:
-                            status:
-                              range: %s
-            """.formatted(name, durationSeconds, expectedStatus));
-      return benchmark.toString();
    }
 }

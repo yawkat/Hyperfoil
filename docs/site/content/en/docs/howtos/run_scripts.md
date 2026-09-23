@@ -30,8 +30,9 @@ suitable for further automation.
 and save an HTML report of the test results in the specified directory, making it easy to review
 performance data immediately after the benchmark completes.
 
-* Automation safeguards: `--fail-on-errors` returns a non-zero status for runtime, validation, SLA, or abnormal-termination errors, and
-`--export <path>` writes final statistics in JSON format by default. Use `--export-format CSV` for CSV output.
+* Automation safeguards: `--fail-on-errors` returns a non-zero status for runtime, validation, SLA, or abnormal-termination errors
+(errors in warmup phases are ignored), and `--export <path>` writes final statistics in JSON format by default.
+Use `--export-format CSV` for CSV output.
 
 ### Usage
 
@@ -45,7 +46,7 @@ Load and start a benchmark on Hyperfoil controller server, the argument can be t
 Options:
   -o, --output         Output destination path for the HTML report
   --print-stack-trace
-  --fail-on-errors     Fail when the run has runtime, validation, or SLA errors
+  --fail-on-errors     Fail when the run has runtime, validation, or SLA errors; warmup phases are ignored
   --export             Destination for exported final run statistics
   --export-format      Format for --export; supported formats are JSON and CSV (default: JSON)
   -d, --description    Run description
@@ -68,7 +69,7 @@ For instance:
 ./distribution/bin/run.sh -o /tmp/reports /tmp/first-benchmark.yml
 ```
 
-For unattended execution with isolated controller state and JSON results:
+For unattended execution with JSON results:
 
 ```bash
 ./distribution/bin/run.sh \

@@ -28,10 +28,16 @@ public class LoadAndRun extends BaseStandaloneCommand {
    }
 
    public static void main(String[] args) {
+      System.exit(run(args));
+   }
+
+   /**
+    * Runs the standalone command and returns the process exit status.
+    */
+   public static int run(String[] args) {
       boolean clustered = Arrays.asList(args).contains(CLUSTERED);
       args = Stream.of(args).filter(s -> !CLUSTERED.equals(s)).toArray(String[]::new);
-      LoadAndRun lr = new LoadAndRun(clustered);
-      System.exit(lr.exec(args));
+      return new LoadAndRun(clustered).exec(args);
    }
 
    @Override
@@ -66,7 +72,7 @@ public class LoadAndRun extends BaseStandaloneCommand {
       @Option(name = "print-stack-trace", hasValue = false)
       public boolean printStackTrace;
 
-      @Option(name = "fail-on-errors", description = "Fail when the run has runtime, validation, or SLA errors", hasValue = false)
+      @Option(name = "fail-on-errors", description = "Fail when the run has runtime, validation, or SLA errors; warmup phases are ignored", hasValue = false)
       private boolean failOnErrors;
 
       @Option(name = "export", description = "Destination for exported final run statistics")
@@ -75,9 +81,21 @@ public class LoadAndRun extends BaseStandaloneCommand {
       @Option(name = "export-format", description = "Format for --export; supported formats are JSON and CSV", defaultValue = "JSON")
       private String exportFormat;
 
+      private Export exportCommand;
+
       @Override
       protected void setup(HyperfoilCommandInvocation invocation) throws CommandException {
-         parseExport();
+         // validate the export options before the benchmark is started so that a typo does not waste a run
+         exportCommand = new Export();
+         exportCommand.format = exportFormat;
+         exportCommand.assumeYes = true;
+         exportCommand.getAcceptFormat();
+         if (export != null) {
+            if (export.toString().isBlank()) {
+               throw new CommandException("Export destination must not be empty");
+            }
+            exportCommand.destination = export;
+         }
          // if benchmarkFile is provided load the benchmark as first step and fail fast if something went wrong
          if (benchmark != null && !benchmark.isBlank()) {
             invocation.executeSwitchable("upload " + (printStackTrace ? "--print-stack-trace " : "") + benchmark);
@@ -89,7 +107,7 @@ public class LoadAndRun extends BaseStandaloneCommand {
       }
 
       @Override
-      protected void monitor(HyperfoilCommandInvocation invocation) throws CommandException {
+      protected CommandResult monitor(HyperfoilCommandInvocation invocation) throws CommandException {
          invocation.executeSwitchable("wait");
          invocation.executeSwitchable("stats -t");
          if (output != null && !output.isBlank()) {
@@ -97,50 +115,28 @@ public class LoadAndRun extends BaseStandaloneCommand {
          } else {
             invocation.println("Skipping report generation, consider providing --output to generate it.");
          }
+         CommandResult result = CommandResult.SUCCESS;
          if (export != null) {
-            Export exportCommand = new Export();
-            exportCommand.destination = export;
-            exportCommand.format = exportFormat;
-            exportCommand.assumeYes = true;
             try {
-               if (exportCommand.execute(invocation) == CommandResult.FAILURE) {
-                  throw new CommandException("Failed to export run statistics to " + export);
-               }
+               result = exportCommand.execute(invocation);
             } catch (InterruptedException e) {
                Thread.currentThread().interrupt();
                throw new CommandException("Interrupted while exporting run statistics", e);
             }
          }
          if (failOnErrors) {
-            failOnErrors(invocation);
+            Client.RunRef runRef = invocation.context().serverRun();
+            if (hasErrors(runRef.get(), runRef.statsTotal())) {
+               invocation.error("Run " + runRef.id() + " completed with errors");
+               result = CommandResult.FAILURE;
+            }
          }
-      }
-
-      private void parseExport() throws CommandException {
-         if (export == null) {
-            return;
-         }
-         exportFormat = exportFormat.toUpperCase();
-         if (!"JSON".equals(exportFormat) && !"CSV".equals(exportFormat)) {
-            throw new CommandException("Unknown export format '" + exportFormat + "'; use JSON or CSV");
-         }
-         if (export.toString().isBlank()) {
-            throw new CommandException("Export destination must not be empty");
-         }
-      }
-
-      private void failOnErrors(HyperfoilCommandInvocation invocation) throws CommandException {
-         Client.RunRef runRef = invocation.context().serverRun();
-         io.hyperfoil.controller.model.Run run = runRef.get();
-         RequestStatisticsResponse stats = runRef.statsTotal();
-         if (hasErrors(run, stats)) {
-            throw new CommandException("Run " + runRef.id() + " completed with errors");
-         }
+         return result;
       }
 
       static boolean hasErrors(io.hyperfoil.controller.model.Run run, RequestStatisticsResponse stats) {
          return run.cancelled || !run.completed || !run.errors.isEmpty() || run.phases.stream().anyMatch(phase -> phase.failed)
-               || stats.statistics.stream().anyMatch(LoadAndRunCommand::hasErrors);
+               || stats.statistics.stream().filter(s -> !s.isWarmup).anyMatch(LoadAndRunCommand::hasErrors);
       }
 
       private static boolean hasErrors(RequestStats stats) {
