@@ -36,6 +36,7 @@ import io.hyperfoil.api.processor.Processor;
 import io.hyperfoil.api.session.ResourceUtilizer;
 import io.hyperfoil.api.session.Session;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufInputStream;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 
@@ -245,8 +246,7 @@ public abstract class CheckProcessor implements Processor {
       }
    }
 
-   private static class JsonProcessor extends CheckProcessor
-         implements ResourceUtilizer, Session.ResourceKey<JsonProcessor.Context> {
+   private static class JsonProcessor extends CheckProcessor {
       private final JsonMatcher expected;
 
       private JsonProcessor(JsonMatcher expected) {
@@ -255,63 +255,12 @@ public abstract class CheckProcessor implements Processor {
 
       @Override
       boolean matches(Session session, ByteBuf data, int offset, int length) {
-         ByteBufStream input = session.getResource(this).input;
-         input.wrap(data, offset, length);
-         try (JsonParser parser = JSON_FACTORY.createParser((InputStream) input)) {
+         try (ByteBufInputStream input = new ByteBufInputStream(data.slice(offset, length), false);
+               JsonParser parser = JSON_FACTORY.createParser((InputStream) input)) {
             return parser.nextToken() != null && expected.matches(parser) && parser.nextToken() == null;
          } catch (IOException e) {
             return false;
-         } finally {
-            input.wrap(null, 0, 0);
          }
-      }
-
-      @Override
-      public void reserve(Session session) {
-         session.declareResource(this, Context::new);
-      }
-
-      static class Context implements Session.Resource {
-         final ByteBufStream input = new ByteBufStream();
-      }
-   }
-
-   /**
-    * Reusable stream over a region of a {@link ByteBuf}. It does not retain the buffer and never releases it.
-    */
-   private static class ByteBufStream extends InputStream {
-      private ByteBuf buf;
-      private int index;
-      private int end;
-
-      void wrap(ByteBuf buf, int offset, int length) {
-         this.buf = buf;
-         this.index = offset;
-         this.end = offset + length;
-      }
-
-      @Override
-      public int read() {
-         return index < end ? buf.getByte(index++) & 0xFF : -1;
-      }
-
-      @Override
-      public int read(byte[] b, int off, int len) {
-         if (len == 0) {
-            return 0;
-         }
-         int n = Math.min(len, end - index);
-         if (n <= 0) {
-            return -1;
-         }
-         buf.getBytes(index, b, off, n);
-         index += n;
-         return n;
-      }
-
-      @Override
-      public int available() {
-         return end - index;
       }
    }
 
