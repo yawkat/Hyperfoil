@@ -37,6 +37,9 @@ public abstract class CollectingVisitor<T> implements Visitor {
          ((Map<?, ?>) value).forEach((k, v) -> visit(null, v, null));
       } else if (ReflectionAcceptor.isScalar(value)) {
          return false;
+      } else if (value.getClass().isArray() && value.getClass().getComponentType().isPrimitive()) {
+         // Primitive payload elements cannot contain session accesses or resource utilizers.
+         return false;
       } else if (value.getClass().isArray()) {
          int length = Array.getLength(value);
          for (int i = 0; i < length; ++i) {
